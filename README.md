@@ -6,8 +6,8 @@ Plain PHP MCP server with an admin console, per-domain SMTP settings, rate limit
 
 1. Create a Forge site with PHP 8.2+ and the PDO SQLite, Sodium, and Fileinfo extensions enabled; point its web root to this repository's `public/` directory.
 2. Deploy the code and run `composer install --no-dev --optimize-autoloader`.
-3. Copy `.env.example` to `.env`. Set `MCP_BASE_URL=https://mailmcp.on-forge.com` and generate `APP_KEY` using the command shown in the file. Keep that key private and stable: SMTP passwords in the database are encrypted with it.
-4. Ensure PHP has PDO SQLite and Sodium enabled. Make `storage/` writable by the PHP-FPM user (for example, `chmod 750 storage`). Keep `storage/mail-mcp.sqlite` persistent across deploys.
+3. Copy `.env.example` to `.env`. Set `MCP_BASE_URL=https://mailmcp.on-forge.com`, set `SQLITE_PATH` to a writable absolute path in your Forge site's shared directory (for example `/home/forge/mailmcp.on-forge.com/shared/mail-mcp.sqlite`; adjust to the actual site path), and generate `APP_KEY` using the command shown in the file. Keep `APP_KEY` private and stable: SMTP passwords in the database are encrypted with it. Relative `SQLITE_PATH` values resolve from the project root; the default is `storage/mail-mcp.sqlite`.
+4. Ensure PHP has PDO SQLite and Sodium enabled. Make the SQLite parent directory writable by the PHP-FPM user. Also keep `storage/` writable for sending limits and logs.
 5. In Forge DNS, point `mailmcp.on-forge.com` to the server, enable HTTPS, and keep the site's document root at `public/`.
 6. Open `https://mailmcp.on-forge.com/admin`. On first visit, create the administrator account. Save the password securely; it is stored as a password hash.
 7. In the admin page, add each sending domain and its SMTP credentials. For AWS SES, use SES SMTP credentials and the regional SES SMTP endpoint, not AWS IAM access keys. Configure sender identities and production access in SES.
@@ -39,7 +39,7 @@ At `/admin`, the administrator can:
 - Set OAuth token lifetime and revoke dynamically registered OAuth clients.
 - Change the admin password.
 
-SMTP passwords are encrypted in SQLite using `APP_KEY` and Sodium secretbox. Back up the database and `.env` together. If `APP_KEY` is lost or changed, saved SMTP passwords cannot be decrypted and must be entered again.
+SMTP passwords are encrypted in SQLite using `APP_KEY` and Sodium secretbox. Back up the database and `.env` together. If `APP_KEY` is lost or changed, saved SMTP passwords cannot be decrypted and must be entered again. For an existing deployment, copy `storage/mail-mcp.sqlite` into the shared folder before changing `SQLITE_PATH`; pause PHP requests during the copy so SQLite writes are not missed. Keep the shared database file across releases.
 
 Existing installs are migrated automatically when the updated code first runs. Existing administrator credentials are copied into the account login table. Assign sender domains to the administrator and create site accounts in the admin page. Existing OAuth access tokens are not associated with a site account and must be authorized again; reconnect ChatGPT using the intended site account.
 
@@ -61,4 +61,4 @@ Application errors are written as one JSON record per line to `storage/logs/mail
 - Create a strong unique admin password and keep the `APP_KEY` secret.
 - Keep SQLite files, `.env`, Composer files, and source code outside the web root.
 - The OAuth server supports public clients using authorization code plus PKCE S256. It does not use client secrets, and access tokens are opaque random values checked against the token table.
-- Configure backups for `storage/mail-mcp.sqlite`; the file contains encrypted SMTP credentials, admin hashes, registered clients, and active tokens.
+- Configure backups for the file set in `SQLITE_PATH`; it contains encrypted SMTP credentials, account hashes, registered clients, and active tokens.

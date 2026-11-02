@@ -19,7 +19,10 @@ final class App
         $baseUrl = rtrim((string) self::env('MCP_BASE_URL', 'https://mailmcp.on-forge.com'), '/');
         $appKey = (string) self::env('APP_KEY', '');
         if ($appKey === '') { throw new \RuntimeException('APP_KEY is required. Generate one with: php -r "echo base64_encode(random_bytes(32)), PHP_EOL;"'); }
-        $store = new Store($root . '/storage/mail-mcp.sqlite');
+        $sqlitePath = trim((string) self::env('SQLITE_PATH', 'storage/mail-mcp.sqlite'));
+        if ($sqlitePath === '') { throw new \RuntimeException('SQLITE_PATH cannot be empty.'); }
+        $sqlitePath = str_starts_with($sqlitePath, '/') ? $sqlitePath : $root . '/' . ltrim($sqlitePath, '/');
+        $store = new Store($sqlitePath);
         $config = [
             'token' => (string) self::env('MCP_BEARER_TOKEN', ''),
             'auth_mode' => 'oauth',
