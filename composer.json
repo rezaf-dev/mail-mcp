@@ -1,0 +1,12 @@
+{
+  "name": "mail-mcp/server",
+  "description": "A small PHP MCP server for sending domain-specific SMTP email",
+  "type": "project",
+  "require": {
+    "php": ">=8.2",
+    "phpmailer/phpmailer": "^6.9"
+  },
+  "autoload": {
+    "psr-4": { "MailMcp\\": "src/" }
+  }
+}
