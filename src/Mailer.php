@@ -10,11 +10,12 @@ final class Mailer
 {
     public function __construct(private readonly string $root, private readonly array $config) {}
 
-    public function send(array $args): string
+    public function send(array $args, array $allowedDomains): string
     {
         $from = filter_var((string) ($args['from'] ?? ''), FILTER_VALIDATE_EMAIL);
         if (!$from) { throw new \InvalidArgumentException('from must be a valid email address.'); }
         $domain = strtolower(substr(strrchr($from, '@') ?: '', 1));
+        if (!in_array($domain, $allowedDomains, true)) { throw new \InvalidArgumentException('This account is not authorized to send from that domain.'); }
         $settings = $this->config['domains'][$domain] ?? null;
         if (!is_array($settings)) { throw new \InvalidArgumentException('The sender domain is not configured.'); }
         foreach (['smtp_host', 'smtp_username', 'smtp_password'] as $key) {
@@ -36,6 +37,9 @@ final class Mailer
         try {
             $mail->isSMTP(); $mail->Host = (string) $settings['smtp_host']; $mail->Port = (int) ($settings['smtp_port'] ?? 587);
             $mail->SMTPAuth = true; $mail->Username = (string) $settings['smtp_username']; $mail->Password = (string) $settings['smtp_password'];
+            // PHPMailer otherwise permits SMTP operations to wait for several minutes.
+            $mail->Timeout = $this->config['smtp_timeout'] ?? 15;
+            $mail->Timelimit = $this->config['smtp_timeout'] ?? 15;
             $encryption = strtolower((string) ($settings['smtp_encryption'] ?? 'tls'));
             $mail->SMTPSecure = match ($encryption) { 'ssl', 'smtps' => PHPMailer::ENCRYPTION_SMTPS, 'none' => '', default => PHPMailer::ENCRYPTION_STARTTLS };
             $mail->CharSet = 'UTF-8'; $mail->setFrom($from, (string) ($settings['from_name'] ?? ''));
@@ -43,13 +47,22 @@ final class Mailer
             foreach ($cc as $address) { $mail->addCC($address); }
             foreach ($bcc as $address) { $mail->addBCC($address); }
             if (!empty($args['reply_to'])) { $mail->addReplyTo((string) $args['reply_to']); }
-            $mail->Subject = $subject; $mail->Body = (string) ($args['html'] ?? $args['text'] ?? '');
-            if (isset($args['text'], $args['html'])) { $mail->AltBody = (string) $args['text']; } elseif (isset($args['text'])) { $mail->isHTML(false); }
+            $mail->Subject = $subject;
+            if (isset($args['html'])) {
+                $mail->isHTML(true);
+                $mail->Body = (string) $args['html'];
+                $mail->AltBody = isset($args['text']) ? (string) $args['text'] : trim(strip_tags(str_ireplace(['<br>', '<br/>', '<br />', '</p>', '</div>', '</li>'], "\n", (string) $args['html'])));
+            } else {
+                $mail->isHTML(false);
+                $mail->Body = (string) $args['text'];
+            }
             foreach ($attachments as $attachment) { $mail->addStringAttachment($attachment['data'], $attachment['name'], PHPMailer::ENCODING_BASE64, $attachment['mime']); }
             $mail->send();
             return (string) $mail->getLastMessageID();
         } catch (Throwable $e) {
-            throw new \RuntimeException('SMTP delivery failed. Check the SMTP host, credentials, sender verification, and TLS settings.');
+            $smtpError = str_replace(array_filter([(string) $settings['smtp_username'], (string) $settings['smtp_password']]), '[redacted]', $e->getMessage());
+            Logger::error('smtp_send_failed', ['domain' => $domain, 'exception' => $e::class, 'smtp_error' => $smtpError]);
+            throw new \RuntimeException('SMTP delivery failed. Check the application log for request ID ' . Logger::requestId() . '; confirm the SES region, SMTP credentials, port, TLS mode, and verified sender identity.');
         }
     }
 

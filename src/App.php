@@ -9,10 +9,12 @@ final class App
 {
     private Store $store;
     private Panel $panel;
+    private ?int $currentAccountId = null;
     public function __construct(private readonly string $root, private readonly array $config) {}
 
     public static function fromEnvironment(string $root): self
     {
+        Logger::configure($root);
         self::loadEnv($root . '/.env');
         $baseUrl = rtrim((string) self::env('MCP_BASE_URL', 'https://mailmcp.on-forge.com'), '/');
         $appKey = (string) self::env('APP_KEY', '');
@@ -29,6 +31,7 @@ final class App
             'max_attachment' => max(1, (int) self::env('MAX_ATTACHMENT_BYTES', '10485760')),
             'max_total_attachment' => max(1, (int) self::env('MAX_TOTAL_ATTACHMENT_BYTES', '20971520')),
             'max_attachments' => max(1, (int) self::env('MAX_ATTACHMENTS', '5')),
+            'smtp_timeout' => max(5, min(60, (int) self::env('SMTP_TIMEOUT_SECONDS', '15'))),
         ];
         $app = new self($root, $config);
         $app->store = $store;
@@ -43,6 +46,7 @@ final class App
         header('X-Content-Type-Options: nosniff');
 
         $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        header('X-Request-ID: ' . Logger::beginRequest($path));
         $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
         if ($this->panel->handle($path, $method)) { return; }
         if ($method === 'GET' && $this->serveOAuthMetadata($path)) { return; }
@@ -71,7 +75,7 @@ final class App
         $body = file_get_contents('php://input');
         if ($body === false || strlen($body) > 30_000_000) { $this->httpError(413, 'Request body is too large.'); return; }
         try { $request = json_decode($body, true, 512, JSON_THROW_ON_ERROR); }
-        catch (Throwable) { $this->rpcError(null, -32700, 'Parse error.'); return; }
+        catch (Throwable $e) { Logger::warning('mcp_parse_error', ['message' => $e->getMessage()]); $this->rpcError(null, -32700, 'Parse error.'); return; }
         if (!is_array($request) || !isset($request['jsonrpc']) || $request['jsonrpc'] !== '2.0' || !isset($request['method'])) {
             $this->rpcError($request['id'] ?? null, -32600, 'Invalid Request.'); return;
         }
@@ -92,8 +96,8 @@ final class App
         } catch (RpcException $e) {
             $this->rpcError($id, $e->rpcCode, $e->getMessage());
         } catch (Throwable $e) {
-            error_log('mail-mcp: ' . $e->getMessage());
-            $this->rpcError($id, -32603, 'Internal error.');
+            Logger::error('mcp_request_failed', ['type' => $e::class, 'message' => $e->getMessage()]);
+            $this->rpcError($id, -32603, 'Internal error. Request ID: ' . Logger::requestId());
         }
     }
 
@@ -104,28 +108,35 @@ final class App
         $args = $params['arguments'] ?? [];
         if (!is_array($args)) { throw new RpcException(-32602, 'Tool arguments must be an object.'); }
         try {
-            $messageId = (new Mailer($this->root, $this->config))->send($args);
+            $allowedDomains = $this->store->accountDomains($this->currentAccountId ?? 0);
+            $messageId = (new Mailer($this->root, $this->config))->send($args, $allowedDomains);
             return ['content' => [['type' => 'text', 'text' => 'Email sent successfully. Message ID: ' . $messageId]], 'isError' => false];
         } catch (\InvalidArgumentException $e) {
+            Logger::warning('mcp_tool_rejected', ['account_id' => $this->currentAccountId, 'reason' => $e->getMessage()]);
             return ['content' => [['type' => 'text', 'text' => $e->getMessage()]], 'isError' => true];
         } catch (\RuntimeException $e) {
-            return ['content' => [['type' => 'text', 'text' => $e->getMessage()]], 'isError' => true];
+            Logger::error('mcp_tool_failed', ['account_id' => $this->currentAccountId, 'reason' => $e->getMessage()]);
+            return ['content' => [['type' => 'text', 'text' => $e->getMessage() . ' Request ID: ' . Logger::requestId()]], 'isError' => true];
         }
     }
 
     private function sendTool(): array
     {
-        return ['name' => 'send_email', 'description' => 'Send one email through the SMTP configuration selected by the sender address domain. Attachments use base64-encoded file content.', 'inputSchema' => [
+        $allowedDomains = $this->store->accountDomains($this->currentAccountId ?? 0);
+        return ['name' => 'send_email', 'description' => 'Send one formatted email through the SMTP account selected by the sender domain. This account can use: ' . ($allowedDomains ? implode(', ', $allowedDomains) : 'no domains assigned') . '. Use text for plain email, html for formatted HTML (headings, paragraphs, lists, links, and emphasis), or supply both for multipart/alternative output. Each attachment is a filename plus raw base64 file content and optional MIME type.', 'inputSchema' => [
             'type' => 'object', 'additionalProperties' => false,
             'required' => ['from', 'to', 'subject'],
+            'anyOf' => [['required' => ['text']], ['required' => ['html']]],
             'properties' => [
-                'from' => ['type' => 'string', 'format' => 'email', 'description' => 'Must use a configured MAIL_DOMAINS_JSON domain.'],
+                'from' => ['type' => 'string', 'format' => 'email', 'description' => 'Must use a domain assigned to the signed-in account.'],
                 'to' => ['type' => 'array', 'minItems' => 1, 'items' => ['type' => 'string', 'format' => 'email']],
                 'cc' => ['type' => 'array', 'items' => ['type' => 'string', 'format' => 'email']],
                 'bcc' => ['type' => 'array', 'items' => ['type' => 'string', 'format' => 'email']],
-                'subject' => ['type' => 'string', 'maxLength' => 998], 'text' => ['type' => 'string'],
-                'html' => ['type' => 'string'], 'reply_to' => ['type' => 'string', 'format' => 'email'],
-                'attachments' => ['type' => 'array', 'description' => 'Optional base64 attachments. Each object has filename, content_base64, and optional mime_type.', 'items' => ['type' => 'object', 'required' => ['filename', 'content_base64'], 'properties' => ['filename' => ['type' => 'string'], 'content_base64' => ['type' => 'string'], 'mime_type' => ['type' => 'string']]]],
+                'subject' => ['type' => 'string', 'maxLength' => 998],
+                'text' => ['type' => 'string', 'description' => 'Plain-text body or accessible fallback for the HTML body.'],
+                'html' => ['type' => 'string', 'description' => 'Formatted HTML email body, for example paragraphs, headings, lists, links, and inline emphasis.'],
+                'reply_to' => ['type' => 'string', 'format' => 'email'],
+                'attachments' => ['type' => 'array', 'maxItems' => $this->config['max_attachments'], 'description' => 'Optional file attachments. content_base64 must contain raw base64-encoded file bytes (no data: URL prefix). Per-file and total decoded size limits are configured on the server.', 'items' => ['type' => 'object', 'additionalProperties' => false, 'required' => ['filename', 'content_base64'], 'properties' => ['filename' => ['type' => 'string'], 'content_base64' => ['type' => 'string'], 'mime_type' => ['type' => 'string', 'description' => 'MIME type such as application/pdf or image/png. Defaults to application/octet-stream.']]]],
             ],
         ]];
     }
@@ -134,9 +145,9 @@ final class App
     {
         if ($this->config['auth_mode'] === 'none') { return true; }
         $provided = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-        if (!str_starts_with($provided, 'Bearer ')) { return false; }
+        if (!str_starts_with($provided, 'Bearer ')) { Logger::warning('mcp_auth_failed', ['reason' => 'missing_bearer']); return false; }
         $token = substr($provided, 7);
-        if ($this->config['auth_mode'] === 'oauth') { return $this->store->validToken($token); }
+        if ($this->config['auth_mode'] === 'oauth') { $this->currentAccountId = $this->store->accountIdForToken($token);if($this->currentAccountId===null)Logger::warning('mcp_auth_failed',['reason'=>'invalid_or_expired_token']);return $this->currentAccountId !== null; }
         if ($this->config['auth_mode'] !== 'bearer') { return false; }
         $expected = $this->config['token'];
         if ($expected === '') { return false; }
