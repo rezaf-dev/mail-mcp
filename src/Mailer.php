@@ -80,7 +80,8 @@ final class Mailer
         $amzDate = gmdate('Ymd\THis\Z'); $date = substr($amzDate, 0, 8); $payloadHash = hash('sha256', $body);
         $canonicalHeaders = "content-type:application/json\n" . "host:$host\n" . "x-amz-content-sha256:$payloadHash\n" . "x-amz-date:$amzDate\n";
         $signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
-        $canonicalRequest = "POST\n$uri\n\n$canonicalHeaders$signedHeaders\n$payloadHash";
+        // CanonicalHeaders ends with a newline; SigV4 then requires the field separator newline before SignedHeaders.
+        $canonicalRequest = "POST\n$uri\n\n$canonicalHeaders\n$signedHeaders\n$payloadHash";
         $scope = "$date/$region/ses/aws4_request";
         $stringToSign = "AWS4-HMAC-SHA256\n$amzDate\n$scope\n" . hash('sha256', $canonicalRequest);
         $kDate = hash_hmac('sha256', $date, 'AWS4' . $settings['aws_secret_access_key'], true);
