@@ -43,6 +43,34 @@ SMTP passwords are encrypted in SQLite using `APP_KEY` and Sodium secretbox. Bac
 
 Existing installs are migrated automatically when the updated code first runs. Existing administrator credentials are copied into the account login table. Assign sender domains to the administrator and create site accounts in the admin page. Existing OAuth access tokens are not associated with a site account and must be authorized again; reconnect ChatGPT using the intended site account.
 
+## Test SMTP locally
+
+For a full local app test, use a separate local database and SMTP settings; do not copy production credentials or the production SQLite database onto a development machine.
+
+```sh
+composer install
+cp .env.example .env
+```
+
+In the local `.env`, set `APP_ENV=local`, `MCP_BASE_URL=http://127.0.0.1:8000`, `SQLITE_PATH=storage/mail-mcp-local.sqlite`, and generate a local `APP_KEY`. Start the PHP server with the front controller as its router:
+
+```sh
+php -S 127.0.0.1:8000 -t public public/index.php
+```
+
+Open `http://127.0.0.1:8000/admin`, create a local administrator, add the SMTP settings, then use **Test SMTP delivery** to send a real message to an address you control. Attach a small file there to test attachments. The local session cookie is non-Secure only when `APP_ENV=local` and the host is loopback; production cookies remain Secure.
+
+To check only DNS, TCP reachability, and TLS from a terminal, use the SES host and port configured in the app:
+
+```sh
+SES_SMTP_HOST=email-smtp.<region>.amazonaws.com
+getent hosts "$SES_SMTP_HOST"
+nc -vz -w 5 "$SES_SMTP_HOST" 587
+timeout 10 openssl s_client -starttls smtp -connect "$SES_SMTP_HOST:587" -servername "$SES_SMTP_HOST" -brief </dev/null
+```
+
+That terminal check does not authenticate or send a message. Run it on the Forge server to check Forge's outbound network path; running it locally checks only your development machine's network.
+
 ## MCP tool
 
 The MCP endpoint is the site root and exposes `send_email`. The sender's domain selects the matching SMTP account. Arguments: `from`, `to` (array), `subject`, and either `text` or `html`. Add both to send a multipart email with plain-text and HTML alternatives. HTML may use normal email markup such as paragraphs, headings, lists, links, and emphasis. Optional `cc`, `bcc`, and `reply_to` are supported.

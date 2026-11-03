@@ -39,7 +39,6 @@ final class Mailer
             $mail->SMTPAuth = true; $mail->Username = (string) $settings['smtp_username']; $mail->Password = (string) $settings['smtp_password'];
             // PHPMailer otherwise permits SMTP operations to wait for several minutes.
             $mail->Timeout = $this->config['smtp_timeout'] ?? 15;
-            $mail->Timelimit = $this->config['smtp_timeout'] ?? 15;
             $encryption = strtolower((string) ($settings['smtp_encryption'] ?? 'tls'));
             $mail->SMTPSecure = match ($encryption) { 'ssl', 'smtps' => PHPMailer::ENCRYPTION_SMTPS, 'none' => '', default => PHPMailer::ENCRYPTION_STARTTLS };
             $mail->CharSet = 'UTF-8'; $mail->setFrom($from, (string) ($settings['from_name'] ?? ''));
@@ -62,7 +61,8 @@ final class Mailer
         } catch (Throwable $e) {
             $smtpError = str_replace(array_filter([(string) $settings['smtp_username'], (string) $settings['smtp_password']]), '[redacted]', $e->getMessage());
             Logger::error('smtp_send_failed', ['domain' => $domain, 'exception' => $e::class, 'smtp_error' => $smtpError]);
-            throw new \RuntimeException('SMTP delivery failed. Check the application log for request ID ' . Logger::requestId() . '; confirm the SES region, SMTP credentials, port, TLS mode, and verified sender identity.');
+            $diagnostic = substr(preg_replace('/[\r\n]+/', ' ', $smtpError) ?? 'SMTP provider returned an unknown error.', 0, 1200);
+            throw new \RuntimeException('SMTP delivery failed. Check the application log for request ID ' . Logger::requestId() . '; confirm the SES region, SMTP credentials, port, TLS mode, and verified sender identity.', 0, new \RuntimeException($diagnostic));
         }
     }
 

@@ -29,6 +29,7 @@ final class App
             'base_url' => $baseUrl,
             'resource_url' => $baseUrl,
             'app_key' => $appKey,
+            'app_env' => strtolower((string) self::env('APP_ENV', 'production')),
             'origins' => array_values(array_filter(array_map('trim', explode(',', (string) self::env('ALLOWED_ORIGINS', ''))))),
             'domains' => self::decryptDomains($store->domains(), $appKey),
             'max_attachment' => max(1, (int) self::env('MAX_ATTACHMENT_BYTES', '10485760')),
