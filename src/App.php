@@ -90,7 +90,7 @@ final class App
         $params = is_array($request['params'] ?? null) ? $request['params'] : [];
         try {
             $result = match ($method) {
-                'initialize' => ['protocolVersion' => $params['protocolVersion'] ?? '2025-03-26', 'capabilities' => ['tools' => ['listChanged' => false]], 'serverInfo' => ['name' => 'mail-mcp', 'version' => '1.0.0'], 'instructions' => 'Send mail through an explicitly configured sender domain. The sender address domain selects its SMTP credentials and rate limits.'],
+                'initialize' => ['protocolVersion' => $params['protocolVersion'] ?? '2025-03-26', 'capabilities' => ['tools' => ['listChanged' => false]], 'serverInfo' => ['name' => 'mail-mcp', 'version' => '1.0.0'], 'instructions' => 'Send mail only from the authorized sender domains for this connection: ' . (($domains = $this->store->accountDomains($this->currentAccountId ?? 0)) ? implode(', ', $domains) : 'none') . '. The sender address domain selects its configured delivery provider and rate limits.'],
                 'notifications/initialized', 'ping' => [],
                 'tools/list' => ['tools' => [$this->sendTool()]],
                 'tools/call' => $this->callTool($params),
@@ -127,7 +127,7 @@ final class App
     private function sendTool(): array
     {
         $allowedDomains = $this->store->accountDomains($this->currentAccountId ?? 0);
-        return ['name' => 'send_email', 'description' => 'Send one formatted email through the SMTP account selected by the sender domain. This account can use: ' . ($allowedDomains ? implode(', ', $allowedDomains) : 'no domains assigned') . '. Use text for plain email, html for formatted HTML (headings, paragraphs, lists, links, and emphasis), or supply both for multipart/alternative output. Each attachment is a filename plus raw base64 file content and optional MIME type.', 'inputSchema' => [
+        return ['name' => 'send_email', 'description' => 'Send one formatted email through the delivery account selected by the sender domain. Authorized sender domains for this connection (only): ' . ($allowedDomains ? implode(', ', $allowedDomains) : 'none assigned') . '. The from address must use one of these domains. Use text for plain email, html for formatted HTML (headings, paragraphs, lists, links, and emphasis), or supply both for multipart/alternative output. Each attachment is a filename plus raw base64 file content and optional MIME type.', 'inputSchema' => [
             'type' => 'object', 'additionalProperties' => false,
             'required' => ['from', 'to', 'subject'],
             'anyOf' => [['required' => ['text']], ['required' => ['html']]],
@@ -235,10 +235,26 @@ final class App
         if (strlen((string) $key) !== SODIUM_CRYPTO_SECRETBOX_KEYBYTES) { throw new \RuntimeException('APP_KEY must be base64-encoded 32 bytes.'); }
         foreach ($domains as &$domain) {
             $raw = base64_decode((string) ($domain['password_enc'] ?? ''), true);
-            if ($raw === false || strlen($raw) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) { $domain['smtp_password'] = ''; continue; }
-            $nonce = substr($raw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
-            $password = sodium_crypto_secretbox_open(substr($raw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES), $nonce, $key);
-            $domain['smtp_password'] = $password === false ? '' : $password;
+            if ($raw === false || strlen($raw) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) { $domain['smtp_password'] = ''; }
+            else {
+                $nonce = substr($raw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+                $password = sodium_crypto_secretbox_open(substr($raw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES), $nonce, $key);
+                $domain['smtp_password'] = $password === false ? '' : $password;
+            }
+            $apiRaw = base64_decode((string) ($domain['ses_secret_enc'] ?? ''), true);
+            if ($apiRaw === false || strlen($apiRaw) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) { $domain['aws_secret_access_key'] = ''; }
+            else {
+                $apiNonce = substr($apiRaw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+                $apiSecret = sodium_crypto_secretbox_open(substr($apiRaw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES), $apiNonce, $key);
+                $domain['aws_secret_access_key'] = $apiSecret === false ? '' : $apiSecret;
+            }
+            $resendRaw = base64_decode((string) ($domain['resend_api_key_enc'] ?? ''), true);
+            if ($resendRaw === false || strlen($resendRaw) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) { $domain['resend_api_key'] = ''; }
+            else {
+                $resendNonce = substr($resendRaw, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+                $resendKey = sodium_crypto_secretbox_open(substr($resendRaw, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES), $resendNonce, $key);
+                $domain['resend_api_key'] = $resendKey === false ? '' : $resendKey;
+            }
         }
         unset($domain);
         return $domains;
